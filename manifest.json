@@ -1,7 +1,13 @@
 {
+  "id": "hacker.plugin",
   "name": "Hacker Plugin",
   "description": "Meu plugin de comandos",
-  "author": "Enzo",
+  "authors": [
+    {
+      "name": "Enzo",
+      "id": "0"
+    }
+  ],
   "version": "1.0.0",
   "main": "index.js"
 }
