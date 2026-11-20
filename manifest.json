@@ -2,7 +2,7 @@
   "id": "hacker.plugin",
   "type": "plugin",
   "spec": 3,
-  "name": "Hacker Plugin",
+  "name": "Plugin Hacker",
   "description": "Meu plugin de comandos",
   "authors": [
     {
