@@ -1,0 +1,7 @@
+{
+  "name": "Hacker Plugin",
+  "description": "Meu plugin de comandos",
+  "author": "Enzo",
+  "version": "1.0.0",
+  "main": "index.js"
+}
