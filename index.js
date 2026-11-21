@@ -1,51 +1,56 @@
-// Plugin: HACKER PLUGIN (19 Comandos)
-// Compatível com Revenge / Bunny / Vendetta
+// HACKER PLUGIN - Base Atualizada Revenge + Bunny (19 Comandos)
 
-const { plugin } = window.revenge || window.vendetta;
-const { commands, metro, patcher, ui } = plugin;
-const { findByProps, findByStoreName } = metro;
-const { showToast } = ui.toasts;
-const { showAlert } = ui.alerts;
-
-// Módulos internos do cliente Discord
-const MessageActions = findByProps("sendMessage", "receiveMessage");
-const FluxDispatcher = findByProps("dispatch", "subscribe");
-const MessageStore = findByStoreName("MessageStore");
-const SelectedChannelStore = findByStoreName("SelectedChannelStore");
-const UserStore = findByStoreName("UserStore");
-
-// Estado em memória (inicia no momento em que o plugin é ativado)
 const state = {
     startedAt: Date.now(),
-    cachedMessages: new Map(), // Guarda mensagens vistas após ativação
+    cachedMessages: new Map(),
     deletedLogs: [],
     editedLogs: [],
     ghostedUsers: new Set(),
     lastTarget: null,
-    unpatches: []
+    cleanups: []
 };
 
-// Utilitários auxiliares
-function sendPublicMessage(channelId, content) {
-    if (!channelId || !content) return;
-    MessageActions.sendMessage(channelId, {
-        content: content,
-        tts: false,
-        invalidEmojis: [],
-        validNonShortcutEmojis: []
-    });
+function getClientApi() {
+    return window.Bunny || window.Revenge || globalThis.Bunny || globalThis.Revenge || null;
 }
 
-function showLocalBox(title, body) {
-    showAlert({
-        title: title,
-        content: body,
-        confirmText: "FECHAR"
-    });
+function getCommandsApi() {
+    const client = getClientApi();
+    return client?.commands || null;
+}
+
+function getMetroApi() {
+    const client = getClientApi();
+    return client?.metro || null;
+}
+
+function getPatcherApi() {
+    const client = getClientApi();
+    return client?.patcher || null;
+}
+
+function showToastSafe(msg) {
+    try {
+        const client = getClientApi();
+        client?.ui?.toasts?.showToast?.(msg);
+    } catch {}
+    console.log("[HACKER PLUGIN] " + msg);
+}
+
+function showBoxSafe(title, body) {
+    try {
+        const client = getClientApi();
+        const alert = client?.ui?.alerts?.showAlert;
+        if (alert) {
+            alert({ title, content: body, confirmText: "FECHAR" });
+            return;
+        }
+    } catch {}
+    showToastSafe(title + " - " + body);
 }
 
 function getOptionValue(args, name) {
-    const opt = args?.find(a => a.name === name);
+    const opt = Array.isArray(args) ? args.find(a => a && a.name === name) : null;
     return opt ? opt.value : null;
 }
 
@@ -55,26 +60,64 @@ function formatTarget(userId) {
     return `<@${userId}>`;
 }
 
-// ==========================================
-// MONITORAMENTO EM TEMPO REAL (CLIENT-SIDE)
-// ==========================================
-function startMonitoring() {
-    // Intercepta novas mensagens recebidas para guardar o conteúdo original
-    const unpatchReceive = patcher.before("receiveMessage", MessageActions, (args) => {
-        const msg = args[1];
-        if (msg && msg.id && msg.content) {
-            state.cachedMessages.set(msg.id, {
-                id: msg.id,
-                channelId: msg.channel_id,
-                author: msg.author?.username || "Desconhecido",
-                authorId: msg.author?.id,
-                content: msg.content,
-                timestamp: new Date().toLocaleTimeString("pt-BR")
-            });
-        }
-    });
+function getMessageActions() {
+    const metro = getMetroApi();
+    return metro?.findByProps?.("sendMessage", "receiveMessage") || null;
+}
 
-    // Escuta eventos de edição e exclusão no FluxDispatcher
+function getFluxDispatcher() {
+    const metro = getMetroApi();
+    return metro?.findByProps?.("dispatch", "subscribe") || null;
+}
+
+function getUserStore() {
+    const metro = getMetroApi();
+    return metro?.findByStoreName?.("UserStore") || null;
+}
+
+function sendPublicMessage(channelId, content) {
+    if (!channelId || !content) return;
+    const MessageActions = getMessageActions();
+    if (typeof MessageActions?.sendMessage === "function") {
+        MessageActions.sendMessage(channelId, {
+            content,
+            tts: false,
+            invalidEmojis: [],
+            validNonShortcutEmojis: []
+        });
+    }
+}
+
+function startMonitoring() {
+    const MessageActions = getMessageActions();
+    const FluxDispatcher = getFluxDispatcher();
+    const patcher = getPatcherApi();
+
+    if (typeof MessageActions?.receiveMessage === "function" && typeof patcher?.before === "function") {
+        const unpatchReceive = patcher.before("receiveMessage", MessageActions, (args) => {
+            const msg = args?.[1];
+            if (msg && msg.id && msg.content) {
+                state.cachedMessages.set(msg.id, {
+                    id: msg.id,
+                    channelId: msg.channel_id,
+                    author: msg.author?.username || "Desconhecido",
+                    authorId: msg.author?.id,
+                    content: msg.content,
+                    timestamp: new Date().toLocaleTimeString("pt-BR")
+                });
+            }
+        });
+        if (typeof unpatchReceive === "function") state.cleanups.push(unpatchReceive);
+
+        const unpatchGhost = patcher.before("receiveMessage", MessageActions, (args) => {
+            const msg = args?.[1];
+            if (msg && msg.author && state.ghostedUsers.has(msg.author.id)) {
+                args[1] = null;
+            }
+        });
+        if (typeof unpatchGhost === "function") state.cleanups.push(unpatchGhost);
+    }
+
     const onMessageDelete = (event) => {
         if (!event || !event.id) return;
         const cached = state.cachedMessages.get(event.id);
@@ -103,29 +146,19 @@ function startMonitoring() {
         }
     };
 
-    FluxDispatcher.subscribe("MESSAGE_DELETE", onMessageDelete);
-    FluxDispatcher.subscribe("MESSAGE_UPDATE", onMessageUpdate);
-
-    // Filtro visual para o comando /fantasma (oculta mensagens do alvo só na sua tela)
-    const unpatchGhost = patcher.before("receiveMessage", MessageActions, (args) => {
-        const msg = args[1];
-        if (msg && msg.author && state.ghostedUsers.has(msg.author.id)) {
-            args[1] = null;
-        }
-    });
-
-    state.unpatches.push(unpatchReceive, unpatchGhost, () => {
-        FluxDispatcher.unsubscribe("MESSAGE_DELETE", onMessageDelete);
-        FluxDispatcher.unsubscribe("MESSAGE_UPDATE", onMessageUpdate);
-    });
+    if (typeof FluxDispatcher?.subscribe === "function") {
+        FluxDispatcher.subscribe("MESSAGE_DELETE", onMessageDelete);
+        FluxDispatcher.subscribe("MESSAGE_UPDATE", onMessageUpdate);
+        state.cleanups.push(() => {
+            try { FluxDispatcher.unsubscribe("MESSAGE_DELETE", onMessageDelete); } catch {}
+            try { FluxDispatcher.unsubscribe("MESSAGE_UPDATE", onMessageUpdate); } catch {}
+        });
+    }
 }
 
-// ==========================================
-// REGISTRO DOS 19 COMANDOS (PREFIXO "/")
-// ==========================================
-function registerAllCommands() {
+function registerAllCommands(commands) {
     const list = [
-        // --- BLOCO 1: TROLLAGEM NO CHAT / DM (4 comandos) ---
+        // --- BLOCO 1: CHAT / DM (4 comandos) ---
         {
             name: "ban",
             displayName: "ban",
@@ -134,7 +167,7 @@ function registerAllCommands() {
             execute: (args, ctx) => {
                 const target = formatTarget(getOptionValue(args, "usuario"));
                 const msg = `\`\`\`ini\n[⚠️ SISTEMA SHADOW - ALERTA CRÍTICO]\n\`\`\`\n> **STATUS:** O usuário ${target} será **banido em 5 dias** automaticamente pelo sistema de hackeamento do Discord.\n> **CÓDIGO DE EXECUÇÃO:** \`#SHD-BAN-05D\``;
-                sendPublicMessage(ctx.channel.id, msg);
+                sendPublicMessage(ctx?.channel?.id, msg);
             }
         },
         {
@@ -145,7 +178,7 @@ function registerAllCommands() {
             execute: (args, ctx) => {
                 const target = formatTarget(getOptionValue(args, "usuario"));
                 const msg = `\`\`\`diff\n- [👾 SHADOW SYSTEM - ACESSO CONCEDIDO]\n\`\`\`\n> **NOTIFICAÇÃO:** O usuário ${target} foi hackeado pelo sistema do **Hacker SHADOW**. Sua conta está sob domínio do **grupo SHADOW**.`;
-                sendPublicMessage(ctx.channel.id, msg);
+                sendPublicMessage(ctx?.channel?.id, msg);
             }
         },
         {
@@ -156,7 +189,7 @@ function registerAllCommands() {
             execute: (args, ctx) => {
                 const texto = getOptionValue(args, "texto");
                 const msg = `\`\`\`fix\n[🤖 TRANSMISSÃO AUTOMÁTICA DO SISTEMA]\n\`\`\`\n> **COMUNICADO:** ${texto}`;
-                sendPublicMessage(ctx.channel.id, msg);
+                sendPublicMessage(ctx?.channel?.id, msg);
             }
         },
         {
@@ -167,18 +200,18 @@ function registerAllCommands() {
             execute: (args, ctx) => {
                 const target = formatTarget(getOptionValue(args, "usuario"));
                 const msg = `\`\`\`ini\n[🔒 SHADOW LOCK - QUARENTENA ATIVA]\n\`\`\`\n> **AVISO:** A conta de ${target} entrou em modo de observação temporária do sistema **SHADOW**.`;
-                sendPublicMessage(ctx.channel.id, msg);
+                sendPublicMessage(ctx?.channel?.id, msg);
             }
         },
 
-        // --- BLOCO 2: TROLLAGEM VISUAL (SÓ NA SUA TELA - 5 comandos) ---
+        // --- BLOCO 2: VISUAL LOCAL / SÓ NA SUA TELA (5 comandos) ---
         {
             name: "fakenitro",
             displayName: "fakenitro",
             description: "Simula visualmente na sua tela a ativação de um badge especial.",
             options: [],
             execute: () => {
-                showLocalBox("✨ NITRO SHADOW ATIVADO (VISUAL)", "Modo visual especial ativado apenas na sua tela!\nStatus: Assinatura Fantasma [9999 dias].");
+                showBoxSafe("✨ NITRO SHADOW ATIVADO (VISUAL)", "Modo visual especial ativado apenas na sua tela!\nStatus: Assinatura Fantasma [9999 dias].");
             }
         },
         {
@@ -189,7 +222,7 @@ function registerAllCommands() {
             execute: (args) => {
                 const txt = getOptionValue(args, "texto") || "";
                 const baguncado = txt.split("").reverse().join("");
-                showLocalBox("🌀 MODO CHAT BAGUNÇADO (LOCAL)", `Original: ${txt}\nInvertido na sua tela: ${baguncado}`);
+                showBoxSafe("🌀 MODO CHAT BAGUNÇADO (LOCAL)", `Original: ${txt}\nInvertido na sua tela: ${baguncado}`);
             }
         },
         {
@@ -198,8 +231,8 @@ function registerAllCommands() {
             description: "Ativa o painel visual temático SHADOW apenas para você.",
             options: [],
             execute: () => {
-                showToast("👾 Modo Visual SHADOW ativado na sua interface!");
-                showLocalBox("👾 HACKER PLUGIN - MODO SHADOW", "Terminal local sincronizado.\nVisibilidade: Apenas você.");
+                showToastSafe("👾 Modo Visual SHADOW ativado na sua interface!");
+                showBoxSafe("👾 HACKER PLUGIN - MODO SHADOW", "Terminal local sincronizado.\nVisibilidade: Apenas você.");
             }
         },
         {
@@ -212,10 +245,10 @@ function registerAllCommands() {
                 state.lastTarget = userId;
                 if (state.ghostedUsers.has(userId)) {
                     state.ghostedUsers.delete(userId);
-                    showToast("👻 Modo fantasma desativado para este usuário.");
+                    showToastSafe("👻 Modo fantasma desativado para este usuário.");
                 } else {
                     state.ghostedUsers.add(userId);
-                    showToast("👻 Usuário ocultado visualmente só na sua tela!");
+                    showToastSafe("👻 Usuário ocultado visualmente só na sua tela!");
                 }
             }
         },
@@ -226,11 +259,11 @@ function registerAllCommands() {
             options: [{ name: "texto", displayName: "texto", description: "Texto do eco", type: 3, required: true }],
             execute: (args) => {
                 const txt = getOptionValue(args, "texto");
-                showLocalBox("🔊 ECO VISUAL", `${txt}\n  ↳ ${txt}\n    ↳ ${txt.toLowerCase()}...`);
+                showBoxSafe("🔊 ECO VISUAL", `${txt}\n  ↳ ${txt}\n    ↳ ${txt.toLowerCase()}...`);
             }
         },
 
-        // --- BLOCO 3: UTILIDADE E MONITORAMENTO (SÓ NA SUA TELA - 5 comandos) ---
+        // --- BLOCO 3: MONITORAMENTO E UTILIDADE / SÓ NA SUA TELA (5 comandos) ---
         {
             name: "mensagensapagadas",
             displayName: "mensagensapagadas",
@@ -238,14 +271,14 @@ function registerAllCommands() {
             options: [],
             execute: () => {
                 if (state.deletedLogs.length === 0) {
-                    showLocalBox("🗑️ MENSAGENS APAGADAS", "Nenhuma mensagem apagada foi capturada desde que você ativou o HACKER PLUGIN.");
+                    showBoxSafe("🗑️ MENSAGENS APAGADAS", "Nenhuma mensagem apagada foi capturada desde que você ativou o HACKER PLUGIN.");
                     return;
                 }
                 const formatted = state.deletedLogs
                     .slice(-15)
                     .map((m, i) => `${i + 1}. [${m.deletedAt}] ${m.author}: ${m.content}`)
                     .join("\n\n");
-                showLocalBox(`🗑️ MENSAGENS APAGADAS (${state.deletedLogs.length})`, formatted);
+                showBoxSafe(`🗑️ MENSAGENS APAGADAS (${state.deletedLogs.length})`, formatted);
             }
         },
         {
@@ -255,14 +288,14 @@ function registerAllCommands() {
             options: [],
             execute: () => {
                 if (state.editedLogs.length === 0) {
-                    showLocalBox("✏️ MENSAGENS EDITADAS", "Nenhuma mensagem editada foi capturada desde a ativação.");
+                    showBoxSafe("✏️ MENSAGENS EDITADAS", "Nenhuma mensagem editada foi capturada desde a ativação.");
                     return;
                 }
                 const formatted = state.editedLogs
                     .slice(-10)
                     .map((m, i) => `${i + 1}. [${m.editedAt}] ${m.author}:\n   Antes: ${m.before}\n   Depois: ${m.after}`)
                     .join("\n\n");
-                showLocalBox(`✏️ MENSAGENS EDITADAS (${state.editedLogs.length})`, formatted);
+                showBoxSafe(`✏️ MENSAGENS EDITADAS (${state.editedLogs.length})`, formatted);
             }
         },
         {
@@ -274,11 +307,11 @@ function registerAllCommands() {
                 const qtd = Math.max(1, Math.min(25, getOptionValue(args, "quantidade") || 5));
                 const slice = state.deletedLogs.slice(-qtd);
                 if (slice.length === 0) {
-                    showLocalBox("🗑️ ÚLTIMOS APAGADOS", "Nenhum registro apagado encontrado ainda.");
+                    showBoxSafe("🗑️ ÚLTIMOS APAGADOS", "Nenhum registro apagado encontrado ainda.");
                     return;
                 }
                 const formatted = slice.map((m, i) => `${i + 1}. [${m.deletedAt}] ${m.author}: ${m.content}`).join("\n\n");
-                showLocalBox(`🗑️ ÚLTIMAS ${slice.length} APAGADAS`, formatted);
+                showBoxSafe(`🗑️ ÚLTIMAS ${slice.length} APAGADAS`, formatted);
             }
         },
         {
@@ -291,11 +324,11 @@ function registerAllCommands() {
                 const all = Array.from(state.cachedMessages.values());
                 const matches = all.filter(m => m.content.toLowerCase().includes(term)).slice(-10);
                 if (matches.length === 0) {
-                    showLocalBox("🔍 BUSCAR MENSAGEM", `Nenhum resultado para "${term}".`);
+                    showBoxSafe("🔍 BUSCAR MENSAGEM", `Nenhum resultado para "${term}".`);
                     return;
                 }
                 const formatted = matches.map(m => `[${m.timestamp}] ${m.author}: ${m.content}`).join("\n\n");
-                showLocalBox(`🔍 RESULTADOS PARA "${term}"`, formatted);
+                showBoxSafe(`🔍 RESULTADOS PARA "${term}"`, formatted);
             }
         },
         {
@@ -305,7 +338,7 @@ function registerAllCommands() {
             options: [],
             execute: () => {
                 const mins = Math.floor((Date.now() - state.startedAt) / 60000);
-                showLocalBox(
+                showBoxSafe(
                     "📊 STATUS - HACKER PLUGIN",
                     `• Tempo ativo: ${mins} minuto(s)\n• Mensagens em cache: ${state.cachedMessages.size}\n• Apagadas capturadas: ${state.deletedLogs.length}\n• Editadas capturadas: ${state.editedLogs.length}`
                 );
@@ -320,7 +353,7 @@ function registerAllCommands() {
             options: [],
             execute: () => {
                 state.ghostedUsers.clear();
-                showToast("🧹 Filtros visuais locais limpos!");
+                showToastSafe("🧹 Filtros visuais locais limpos!");
             }
         },
         {
@@ -330,11 +363,12 @@ function registerAllCommands() {
             options: [],
             execute: () => {
                 if (!state.lastTarget) {
-                    showLocalBox("🎯 ALVO ATUAL", "Nenhum usuário foi selecionado ainda.");
+                    showBoxSafe("🎯 ALVO ATUAL", "Nenhum usuário foi selecionado ainda.");
                     return;
                 }
-                const user = UserStore.getUser(state.lastTarget);
-                showLocalBox("🎯 ALVO ATUAL", `Usuário: ${user ? user.username : "ID"} (${state.lastTarget})`);
+                const UserStore = getUserStore();
+                const user = UserStore?.getUser?.(state.lastTarget);
+                showBoxSafe("🎯 ALVO ATUAL", `Usuário: ${user ? user.username : "ID"} (${state.lastTarget})`);
             }
         },
         {
@@ -346,7 +380,7 @@ function registerAllCommands() {
                 const userId = getOptionValue(args, "usuario");
                 state.lastTarget = userId;
                 const count = Array.from(state.cachedMessages.values()).filter(m => m.authorId === userId).length;
-                showLocalBox("🔢 CONTADOR DE MENSAGENS", `Mensagens registradas deste usuário desde a ativação: ${count}`);
+                showBoxSafe("🔢 CONTADOR DE MENSAGENS", `Mensagens registradas deste usuário desde a ativação: ${count}`);
             }
         },
         {
@@ -356,7 +390,7 @@ function registerAllCommands() {
             options: [],
             execute: () => {
                 const res = Math.random() < 0.5 ? "🪙 CARA!" : "👑 COROA!";
-                showToast(`Resultado: ${res}`);
+                showToastSafe("Resultado: " + res);
             }
         },
         {
@@ -386,43 +420,52 @@ function registerAllCommands() {
                     "18. /moeda",
                     "19. /ajuda"
                 ].join("\n");
-                showLocalBox("📜 HACKER PLUGIN - 19 COMANDOS", menu);
+                showBoxSafe("📜 HACKER PLUGIN - 19 COMANDOS", menu);
             }
         }
     ];
 
     list.forEach(cmd => {
-        const unregister = commands.registerCommand({
-            name: cmd.name,
-            displayName: cmd.displayName,
-            description: cmd.description,
-            displayDescription: cmd.description,
-            options: cmd.options,
-            applicationId: "-1",
-            inputType: 1,
-            type: 1,
-            execute: cmd.execute
-        });
-        state.unpatches.push(unregister);
+        try {
+            const unregister = commands.registerCommand({
+                name: cmd.name,
+                displayName: cmd.displayName,
+                description: cmd.description,
+                displayDescription: cmd.description,
+                options: cmd.options,
+                inputType: 1,
+                type: 1,
+                execute: cmd.execute
+            });
+            if (typeof unregister === "function") {
+                state.cleanups.push(unregister);
+            }
+        } catch {}
     });
 }
 
-// Ciclo de vida do plugin no Revenge
 export default {
-    onLoad: () => {
+    onStart() {
         state.startedAt = Date.now();
+        const commands = getCommandsApi();
+        if (!commands?.registerCommand) {
+            showToastSafe("HACKER PLUGIN ligado! Mas comandos não encontrados nesta versão");
+            return;
+        }
         startMonitoring();
-        registerAllCommands();
-        showToast("👾 HACKER PLUGIN (19 Comandos) ativado! Monitorando mensagens...");
+        registerAllCommands(commands);
+        showToastSafe("👾 HACKER PLUGIN (19 Comandos) ativado! Digita /ajuda");
     },
-    onUnload: () => {
-        state.unpatches.forEach(unpatch => {
-            try { unpatch(); } catch (e) {}
+
+    onStop() {
+        state.cleanups.forEach(fn => {
+            try { fn(); } catch {}
         });
+        state.cleanups = [];
         state.cachedMessages.clear();
         state.deletedLogs = [];
         state.editedLogs = [];
         state.ghostedUsers.clear();
-        showToast("HACKER PLUGIN desativado.");
+        showToastSafe("HACKER PLUGIN desativado.");
     }
 };
